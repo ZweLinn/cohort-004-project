@@ -2,12 +2,30 @@ import { Link } from "react-router";
 import { useState, useEffect } from "react";
 import type { Route } from "./+types/home";
 import { Button } from "~/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
-import { buildCourseQuery, getLessonCountForCourse } from "~/services/courseService";
+import {
+  Card,
+  CardContent,
+  CardFooter,
+  CardHeader,
+} from "~/components/ui/card";
+import {
+  buildCourseQuery,
+  getLessonCountForCourse,
+} from "~/services/courseService";
+import { getRatingStatsForCourses } from "~/services/ratingService";
 import { getAllCategories } from "~/services/categoryService";
 import { CourseStatus } from "~/db/schema";
-import { BookOpen, GraduationCap, Users, ArrowRight, User, Moon, Sun } from "lucide-react";
+import {
+  BookOpen,
+  GraduationCap,
+  Users,
+  ArrowRight,
+  User,
+  Moon,
+  Sun,
+} from "lucide-react";
 import { CourseImage } from "~/components/course-image";
+import { CourseRating } from "~/components/course-rating";
 import { DevUI } from "~/components/dev-ui";
 import { getAllUsers, getUserById } from "~/services/userService";
 import { getCurrentUserId, getDevCountry } from "~/lib/session";
@@ -16,15 +34,33 @@ import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 export function meta({}: Route.MetaArgs) {
   return [
     { title: "Cadence — Learn at your own pace" },
-    { name: "description", content: "A modern course platform for developers. Browse courses, track your progress, and learn at your own pace." },
+    {
+      name: "description",
+      content:
+        "A modern course platform for developers. Browse courses, track your progress, and learn at your own pace.",
+    },
   ];
 }
 
 export async function loader({ request }: Route.LoaderArgs) {
-  const courses = buildCourseQuery(null, null, CourseStatus.Published, "newest", 50, 0);
+  const courses = buildCourseQuery(
+    null,
+    null,
+    CourseStatus.Published,
+    "newest",
+    50,
+    0
+  );
   const featured = courses.slice(0, 3).map((course) => ({
     ...course,
     lessonCount: getLessonCountForCourse(course.id),
+  }));
+  const ratingStats = getRatingStatsForCourses(featured.map((c) => c.id));
+  const ratingById = new Map(ratingStats.map((s) => [s.courseId, s]));
+  const featuredCourses = featured.map((course) => ({
+    ...course,
+    averageRating: ratingById.get(course.id)?.averageRating ?? null,
+    ratingCount: ratingById.get(course.id)?.ratingCount ?? 0,
   }));
   const categories = getAllCategories();
   const users = getAllUsers();
@@ -34,7 +70,7 @@ export async function loader({ request }: Route.LoaderArgs) {
   const countryTierInfo = getCountryTierInfo(devCountry);
 
   return {
-    featuredCourses: featured,
+    featuredCourses,
     totalCourses: courses.length,
     totalCategories: categories.length,
     users: users.map((u) => ({ id: u.id, name: u.name, role: u.role })),
@@ -48,7 +84,16 @@ export async function loader({ request }: Route.LoaderArgs) {
 }
 
 export default function Home({ loaderData }: Route.ComponentProps) {
-  const { featuredCourses, totalCourses, totalCategories, users, currentUser, devCountry, countryTierInfo, countries } = loaderData;
+  const {
+    featuredCourses,
+    totalCourses,
+    totalCategories,
+    users,
+    currentUser,
+    devCountry,
+    countryTierInfo,
+    countries,
+  } = loaderData;
   const [isDark, setIsDark] = useState(false);
 
   useEffect(() => {
@@ -61,7 +106,9 @@ export default function Home({ loaderData }: Route.ComponentProps) {
     document.documentElement.classList.toggle("dark", next);
     try {
       localStorage.setItem("cadence-theme", next ? "dark" : "light");
-    } catch {}
+    } catch {
+      // localStorage may be unavailable (e.g. private mode) - theme toggle still works in-memory
+    }
   }
 
   return (
@@ -83,7 +130,11 @@ export default function Home({ loaderData }: Route.ComponentProps) {
               className="rounded-md p-2 text-muted-foreground transition-colors hover:text-foreground"
               title={isDark ? "Switch to light mode" : "Switch to dark mode"}
             >
-              {isDark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+              {isDark ? (
+                <Sun className="size-4" />
+              ) : (
+                <Moon className="size-4" />
+              )}
             </button>
             {currentUser ? (
               <Button asChild size="sm">
@@ -113,8 +164,8 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           <span className="text-muted-foreground">at your own pace</span>
         </h1>
         <p className="mx-auto mt-6 max-w-2xl text-lg text-muted-foreground">
-          Structured courses built by experienced instructors. Track your progress,
-          take quizzes, and build real-world skills.
+          Structured courses built by experienced instructors. Track your
+          progress, take quizzes, and build real-world skills.
         </p>
         <div className="mt-10 flex items-center justify-center gap-4">
           <Button asChild size="lg">
@@ -147,7 +198,9 @@ export default function Home({ loaderData }: Route.ComponentProps) {
               <Users className="size-6 text-primary" />
             </div>
             <p className="text-2xl font-bold">Self-paced</p>
-            <p className="text-sm text-muted-foreground">Learn on your schedule</p>
+            <p className="text-sm text-muted-foreground">
+              Learn on your schedule
+            </p>
           </div>
         </div>
       </section>
@@ -156,7 +209,9 @@ export default function Home({ loaderData }: Route.ComponentProps) {
         <section className="mx-auto max-w-6xl px-6 py-20">
           <div className="mb-10 flex items-end justify-between">
             <div>
-              <h2 className="text-3xl font-bold tracking-tight">Featured Courses</h2>
+              <h2 className="text-3xl font-bold tracking-tight">
+                Featured Courses
+              </h2>
               <p className="mt-2 text-muted-foreground">
                 Start learning with our most popular courses
               </p>
@@ -170,7 +225,11 @@ export default function Home({ loaderData }: Route.ComponentProps) {
           </div>
           <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
             {featuredCourses.map((course) => (
-              <Link key={course.id} to={`/courses/${course.slug}`} className="group">
+              <Link
+                key={course.id}
+                to={`/courses/${course.slug}`}
+                className="group"
+              >
                 <Card className="h-full overflow-hidden pt-0 transition-shadow group-hover:shadow-md">
                   <CourseImage
                     src={course.coverImageUrl}
@@ -186,6 +245,15 @@ export default function Home({ loaderData }: Route.ComponentProps) {
                     <p className="line-clamp-2 text-sm text-muted-foreground">
                       {course.description}
                     </p>
+                    {course.ratingCount > 0 && (
+                      <div className="mt-1.5">
+                        <CourseRating
+                          averageRating={course.averageRating}
+                          ratingCount={course.ratingCount}
+                          size="sm"
+                        />
+                      </div>
+                    )}
                   </CardContent>
                   <CardFooter className="flex items-center justify-between text-xs text-muted-foreground">
                     <span className="flex items-center gap-1">

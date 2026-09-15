@@ -1,12 +1,18 @@
 import { useEffect } from "react";
-import { Link, useSearchParams } from "react-router";
+import { Link, useFetcher, useSearchParams } from "react-router";
 import { toast } from "sonner";
+import { z } from "zod";
 import type { Route } from "./+types/courses.$slug";
 import {
   getCourseBySlug,
   getCourseWithDetails,
   getLessonCountForCourse,
 } from "~/services/courseService";
+import {
+  rateCourse,
+  getRatingStatsForCourse,
+  getUserCourseRating,
+} from "~/services/ratingService";
 import { isUserEnrolled } from "~/services/enrollmentService";
 import {
   calculateProgress,
@@ -14,6 +20,7 @@ import {
   getNextIncompleteLesson,
 } from "~/services/progressService";
 import { getCurrentUserId } from "~/lib/session";
+import { parseFormData, parseParams } from "~/lib/validation";
 import { LessonProgressStatus } from "~/db/schema";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
@@ -37,6 +44,7 @@ import {
 } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { UserAvatar } from "~/components/user-avatar";
+import { CourseRating, CourseRatingInput } from "~/components/course-rating";
 import { data, isRouteErrorResponse } from "react-router";
 import { formatDuration, formatPrice } from "~/lib/utils";
 import { renderMarkdown } from "~/lib/markdown.server";
@@ -50,6 +58,15 @@ export function meta({ data: loaderData }: Route.MetaArgs) {
     { name: "description", content: loaderData?.course?.description ?? "" },
   ];
 }
+
+const ratingParamsSchema = z.object({
+  slug: z.string().min(1),
+});
+
+const ratingActionSchema = z.object({
+  intent: z.literal("rate-course"),
+  rating: z.coerce.number().int().min(1).max(5),
+});
 
 export async function loader({ params, request }: Route.LoaderArgs) {
   const slug = params.slug;
@@ -69,7 +86,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
 
   let enrolled = false;
   let progress = 0;
-  let lessonProgressMap: Record<number, string> = {};
+  const lessonProgressMap: Record<number, string> = {};
   let nextLessonId: number | null = null;
 
   if (currentUserId) {
@@ -102,6 +119,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     : courseWithDetails.price;
   const tierInfo = getCountryTierInfo(country);
 
+  const ratingStats = getRatingStatsForCourse(course.id);
+  const userRating = currentUserId
+    ? getUserCourseRating(currentUserId, course.id)
+    : undefined;
+
   return {
     course: courseWithDetails,
     salesCopyHtml,
@@ -113,10 +135,51 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingStats,
+    userRating: userRating ?? null,
   };
 }
 
-// No action — enrollment is handled via the purchase confirmation page
+export async function action({ params, request }: Route.ActionArgs) {
+  const { slug } = parseParams(params, ratingParamsSchema);
+  const course = getCourseBySlug(slug);
+
+  if (!course) {
+    return { ok: false as const, error: "Course not found." };
+  }
+
+  const currentUserId = await getCurrentUserId(request);
+  if (!currentUserId) {
+    return {
+      ok: false as const,
+      error: "You must be signed in to rate this course.",
+    };
+  }
+
+  const formData = await request.formData();
+  const parsed = parseFormData(formData, ratingActionSchema);
+
+  if (!parsed.success) {
+    return {
+      ok: false as const,
+      error: "Rating must be a whole number between 1 and 5.",
+    };
+  }
+
+  try {
+    rateCourse(currentUserId, course.id, parsed.data.rating);
+  } catch (error) {
+    return {
+      ok: false as const,
+      error:
+        error instanceof Error
+          ? error.message
+          : "We couldn't save your rating. Please try again.",
+    };
+  }
+
+  return { ok: true as const };
+}
 
 export function HydrateFallback() {
   return (
@@ -181,9 +244,37 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     currentUserId,
     pppPrice,
     tierInfo,
+    ratingStats,
+    userRating,
   } = loaderData;
   const isInstructor = currentUserId === course.instructorId;
   const [searchParams, setSearchParams] = useSearchParams();
+  const fetcher = useFetcher();
+  const ratingSubmitting = fetcher.state !== "idle";
+  // While a rating is in flight, show the star the user just clicked instead of
+  // the last saved value, so the widget responds immediately.
+  const pendingRating = fetcher.formData?.get("rating");
+  const displayedRating =
+    typeof pendingRating === "string"
+      ? Number(pendingRating)
+      : (userRating?.rating ?? 0);
+
+  function handleRate(rating: number) {
+    fetcher.submit(
+      { intent: "rate-course", rating: String(rating) },
+      { method: "post" }
+    );
+  }
+
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcher.data) return;
+
+    if (fetcher.data.ok) {
+      toast.success("Rating saved!");
+    } else {
+      toast.error(fetcher.data.error);
+    }
+  }, [fetcher.state, fetcher.data]);
 
   useEffect(() => {
     if (searchParams.get("already_enrolled") === "1") {
@@ -301,6 +392,13 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
         <p className="mb-4 text-lg text-muted-foreground">
           {course.description}
         </p>
+        <div className="mb-3 flex items-center gap-1.5">
+          <CourseRating
+            averageRating={ratingStats.averageRating}
+            ratingCount={ratingStats.ratingCount}
+            emptyLabel="No ratings yet"
+          />
+        </div>
         <div className="flex items-center gap-4 text-sm text-muted-foreground">
           <span className="flex items-center gap-1.5">
             <UserAvatar
@@ -444,6 +542,40 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               </div>
             </CardContent>
           </Card>
+
+          {enrolled && !isInstructor && (
+            <Card>
+              <CardHeader>
+                <h2 className="text-lg font-semibold">
+                  {userRating ? "Your Rating" : "Rate This Course"}
+                </h2>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <p className="text-sm text-muted-foreground">
+                    {userRating
+                      ? "Tap a different star to change your rating."
+                      : "How many stars would you give this course?"}
+                  </p>
+                  <CourseRatingInput
+                    value={displayedRating}
+                    onRate={handleRate}
+                    disabled={ratingSubmitting}
+                  />
+                  {ratingSubmitting ? (
+                    <p className="text-xs text-muted-foreground">
+                      Saving your rating...
+                    </p>
+                  ) : userRating ? (
+                    <p className="text-xs text-muted-foreground">
+                      Thanks for rating this course! You rated it{" "}
+                      {userRating.rating}/5.
+                    </p>
+                  ) : null}
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       </div>
     </div>

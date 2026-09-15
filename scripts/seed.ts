@@ -56,6 +56,7 @@ async function seed() {
     DROP TABLE IF EXISTS team_members;
     DROP TABLE IF EXISTS teams;
     DROP TABLE IF EXISTS purchases;
+    DROP TABLE IF EXISTS course_ratings;
     DROP TABLE IF EXISTS enrollments;
     DROP TABLE IF EXISTS lessons;
     DROP TABLE IF EXISTS modules;
@@ -1403,6 +1404,56 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log("Created 7 enrollments.");
 
+  // ─── Course Ratings ───
+  // Only enrolled students may rate, and each student rates a course once.
+  // Sophia (recently enrolled, barely started) is deliberately left unrated
+  // so the rate widget stays demoable.
+  // Course 1 (TypeScript): Emma 5, James 5, Olivia 4 -> avg 4.7
+  // Course 2 (REST APIs): Emma 4, Olivia 5, Liam 3 -> avg 4.0
+
+  db.insert(schema.courseRatings)
+    .values([
+      {
+        userId: students[0].id,
+        courseId: course1.id,
+        rating: 5,
+        createdAt: daysAgo(40),
+      },
+      {
+        userId: students[1].id,
+        courseId: course1.id,
+        rating: 5,
+        createdAt: daysAgo(20),
+      },
+      {
+        userId: students[2].id,
+        courseId: course1.id,
+        rating: 4,
+        createdAt: daysAgo(30),
+      },
+      {
+        userId: students[0].id,
+        courseId: course2.id,
+        rating: 4,
+        createdAt: daysAgo(35),
+      },
+      {
+        userId: students[2].id,
+        courseId: course2.id,
+        rating: 5,
+        createdAt: daysAgo(25),
+      },
+      {
+        userId: students[3].id,
+        courseId: course2.id,
+        rating: 3,
+        createdAt: daysAgo(15),
+      },
+    ])
+    .run();
+
+  console.log("Created 6 course ratings.");
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete
@@ -1735,6 +1786,7 @@ You've completed the Building REST APIs course. You now have the skills to build
   );
   console.log("  Quizzes: 3");
   console.log("  Enrollments: 7");
+  console.log("  Course Ratings: 6");
   console.log("  Purchases: 6 (5 individual + 1 team)");
   console.log("  Teams: 1 (with 5 coupons)");
 }
