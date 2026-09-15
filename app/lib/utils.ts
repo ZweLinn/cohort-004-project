@@ -14,6 +14,40 @@ export function formatPrice(cents: number | null | undefined): string {
   return `$${(cents / 100).toFixed(2)}`;
 }
 
+/**
+ * Human-readable relative time ("3 minutes ago", "yesterday").
+ * `now` is injectable for deterministic tests.
+ */
+export function formatRelativeTime(
+  iso: string,
+  now: number = Date.now()
+): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return "";
+
+  const diffSeconds = (then - now) / 1000;
+  const sign = diffSeconds < 0 ? -1 : 1;
+  let magnitude = Math.abs(diffSeconds);
+  const formatter = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+  const thresholds: Array<[Intl.RelativeTimeFormatUnit, number]> = [
+    ["second", 60],
+    ["minute", 60],
+    ["hour", 24],
+    ["day", 30],
+    ["month", 12],
+  ];
+
+  for (const [unit, limit] of thresholds) {
+    if (magnitude < limit) {
+      return formatter.format(sign * Math.round(magnitude), unit);
+    }
+    magnitude = magnitude / limit;
+  }
+
+  return formatter.format(sign * Math.round(magnitude), "year");
+}
+
 export function formatDuration(
   minutes: number,
   showHours: boolean,

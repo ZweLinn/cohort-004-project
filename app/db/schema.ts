@@ -4,6 +4,8 @@ import {
   integer,
   real,
   uniqueIndex,
+  index,
+  type AnySQLiteColumn,
 } from "drizzle-orm/sqlite-core";
 
 export enum UserRole {
@@ -156,6 +158,45 @@ export const lessonProgress = sqliteTable("lesson_progress", {
   status: text("status").notNull().$type<LessonProgressStatus>(),
   completedAt: text("completed_at"),
 });
+
+export const comments = sqliteTable(
+  "comments",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    lessonId: integer("lesson_id")
+      .notNull()
+      .references(() => lessons.id),
+    // Nulled out when the comment is soft-deleted, so nothing points at a
+    // user who has been detached from the thread.
+    userId: integer("user_id").references(() => users.id),
+    // Two-level threading only: a non-null parentId must reference a
+    // top-level comment (one whose own parentId is null).
+    parentId: integer("parent_id").references(
+      (): AnySQLiteColumn => comments.id
+    ),
+    body: text("body").notNull(),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+    // Null until the author edits; drives the "edited" marker.
+    updatedAt: text("updated_at"),
+    // Soft delete (tombstone) columns - replies survive their parent.
+    deletedAt: text("deleted_at"),
+    deletedByUserId: integer("deleted_by_user_id").references(() => users.id),
+    deletedReason: text("deleted_reason"),
+  },
+  (table) => [
+    // Thread reads: top-level by (lessonId, parentId IS NULL), then replies
+    // fetched by the parent ids. Also serves the per-lesson rate-limit count.
+    index("comments_lesson_parent_created_idx").on(
+      table.lessonId,
+      table.parentId,
+      table.createdAt
+    ),
+    // Per-user rate limiting: count rows in a recent time window.
+    index("comments_user_created_idx").on(table.userId, table.createdAt),
+  ]
+);
 
 export const quizzes = sqliteTable("quizzes", {
   id: integer("id").primaryKey({ autoIncrement: true }),

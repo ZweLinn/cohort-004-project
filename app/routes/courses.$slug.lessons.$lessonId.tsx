@@ -55,15 +55,72 @@ import { resolveCountry } from "~/lib/country.server";
 import { checkPppAccess, COUNTRIES } from "~/lib/ppp";
 import { findPurchase } from "~/services/purchaseService";
 import { parseFormData, parseParams } from "~/lib/validation";
+import {
+  CommentError,
+  createComment,
+  deleteComment,
+  getCommentAccess,
+  getThreadForLesson,
+  updateComment,
+} from "~/services/commentService";
+import { LessonComments } from "~/components/lesson-comments";
+import { MAX_COMMENT_LENGTH, MAX_DELETE_REASON_LENGTH } from "~/lib/comments";
 
 const lessonParamsSchema = z.object({
   slug: z.string().min(1),
   lessonId: z.coerce.number().int(),
 });
 
-const markCompleteSchema = z.object({
-  intent: z.literal("mark-complete"),
+const commentBodySchema = z
+  .string()
+  .trim()
+  .min(1, "Comment cannot be empty")
+  .max(
+    MAX_COMMENT_LENGTH,
+    `Comment must be ${MAX_COMMENT_LENGTH} characters or fewer`
+  );
+
+const createCommentSchema = z.object({
+  intent: z.literal("create-comment"),
+  body: commentBodySchema,
+  parentId: z.coerce.number().int().positive().optional(),
 });
+
+const updateCommentSchema = z.object({
+  intent: z.literal("update-comment"),
+  commentId: z.coerce.number().int().positive(),
+  body: commentBodySchema,
+});
+
+const deleteCommentSchema = z.object({
+  intent: z.literal("delete-comment"),
+  commentId: z.coerce.number().int().positive(),
+  reason: z.string().trim().max(MAX_DELETE_REASON_LENGTH).optional(),
+});
+
+function firstFieldError(errors: Record<string, string>): string {
+  return Object.values(errors)[0] ?? "Invalid comment";
+}
+
+/**
+ * Comment mutations report expected failures back to the fetcher instead of
+ * throwing, so a rejected post shows a toast rather than replacing the whole
+ * lesson page with an error boundary.
+ */
+function commentMutation(run: () => void): {
+  commentSuccess?: boolean;
+  commentError?: string;
+} {
+  try {
+    run();
+    return { commentSuccess: true };
+  } catch (error) {
+    if (error instanceof CommentError) {
+      return { commentError: error.message };
+    }
+    throw error;
+  }
+}
 
 export function meta({ data: loaderData }: Route.MetaArgs) {
   const title = loaderData?.lesson?.title ?? "Lesson";
@@ -137,7 +194,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   let lessonStatus: string | null = null;
   let lastWatchPosition = 0;
   let watchProgress = 0;
-  let lessonProgressMap: Record<number, string> = {};
+  const lessonProgressMap: Record<number, string> = {};
 
   if (currentUserId) {
     enrolled = isUserEnrolled(currentUserId, course.id);
@@ -248,6 +305,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
+  // Lesson discussion. Read/post is limited to enrolled students, the course's
+  // owner instructor, and admins - non-participants get no comment data at all.
+  const commentAccess = getCommentAccess(currentUserId, lessonId);
+  const comments = commentAccess.canRead ? getThreadForLesson(lessonId) : null;
+
   return {
     course: {
       id: courseWithDetails.id,
@@ -281,6 +343,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    commentAccess,
   };
 }
 
@@ -329,6 +393,48 @@ export async function action({ params, request }: Route.ActionArgs) {
     }
 
     return { quizResult: result };
+  }
+
+  if (intent === "create-comment") {
+    const parsed = parseFormData(formData, createCommentSchema);
+    if (!parsed.success) {
+      return { commentError: firstFieldError(parsed.errors) };
+    }
+
+    return commentMutation(() => {
+      createComment({
+        userId: currentUserId,
+        lessonId,
+        body: parsed.data.body,
+        parentId: parsed.data.parentId ?? null,
+      });
+    });
+  }
+
+  if (intent === "update-comment") {
+    const parsed = parseFormData(formData, updateCommentSchema);
+    if (!parsed.success) {
+      return { commentError: firstFieldError(parsed.errors) };
+    }
+
+    return commentMutation(() => {
+      updateComment(currentUserId, parsed.data.commentId, parsed.data.body);
+    });
+  }
+
+  if (intent === "delete-comment") {
+    const parsed = parseFormData(formData, deleteCommentSchema);
+    if (!parsed.success) {
+      return { commentError: firstFieldError(parsed.errors) };
+    }
+
+    return commentMutation(() => {
+      deleteComment(
+        currentUserId,
+        parsed.data.commentId,
+        parsed.data.reason ?? null
+      );
+    });
   }
 
   throw data("Invalid action", { status: 400 });
@@ -382,6 +488,8 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
+    comments,
+    commentAccess,
   } = loaderData;
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
@@ -433,12 +541,12 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
             students in lower-income regions.
           </p>
           <div className="flex items-center justify-center gap-3">
-            <Link to={`/courses/${course.slug}`}>
-              <Button variant="outline">
+            <Button variant="outline" asChild>
+              <Link to={`/courses/${course.slug}`}>
                 <MapPin className="mr-2 size-4" />
                 Back to Course
-              </Button>
-            </Link>
+              </Link>
+            </Button>
           </div>
         </div>
       </div>
@@ -491,16 +599,16 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
               </div>
             )}
             {lesson.githubRepoUrl && (
-              <a
-                href={lesson.githubRepoUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                <Button variant="outline" size="sm">
+              <Button variant="outline" size="sm" asChild>
+                <a
+                  href={lesson.githubRepoUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
                   <Github className="mr-1.5 size-4" />
                   Open Code
-                </Button>
-              </a>
+                </a>
+              </Button>
             )}
           </div>
 
@@ -535,6 +643,16 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
             </Card>
           )}
 
+          {/* Discussion */}
+          <LessonComments
+            lessonId={lesson.id}
+            comments={comments}
+            access={commentAccess}
+            currentUserId={currentUserId}
+            loggedIn={currentUserId !== null}
+            courseSlug={course.slug}
+          />
+
           {/* Quiz Section */}
           {quiz && enrolled && currentUserId && (
             <QuizSection
@@ -556,14 +674,14 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
                     <span className="font-medium">Lesson completed</span>
                   </div>
                   {nextLesson && (
-                    <Link
-                      to={`/courses/${course.slug}/lessons/${nextLesson.id}`}
-                    >
-                      <Button variant="outline" size="sm">
+                    <Button variant="outline" size="sm" asChild>
+                      <Link
+                        to={`/courses/${course.slug}/lessons/${nextLesson.id}`}
+                      >
                         Up next: {nextLesson.title}
                         <ChevronRight className="ml-1 size-4" />
-                      </Button>
-                    </Link>
+                      </Link>
+                    </Button>
                   )}
                 </div>
               ) : nextLesson ? (
@@ -1042,12 +1160,12 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
         <h1 className="mb-2 text-2xl font-bold">{title}</h1>
         <p className="mb-6 text-muted-foreground">{message}</p>
         <div className="flex items-center justify-center gap-3">
-          <Link to="/courses">
-            <Button variant="outline">Browse Courses</Button>
-          </Link>
-          <Link to="/dashboard">
-            <Button>My Dashboard</Button>
-          </Link>
+          <Button variant="outline" asChild>
+            <Link to="/courses">Browse Courses</Link>
+          </Button>
+          <Button asChild>
+            <Link to="/dashboard">My Dashboard</Link>
+          </Button>
         </div>
       </div>
     </div>

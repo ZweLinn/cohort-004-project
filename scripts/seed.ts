@@ -46,6 +46,7 @@ async function seed() {
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
     DROP TABLE IF EXISTS video_watch_events;
+    DROP TABLE IF EXISTS comments;
     DROP TABLE IF EXISTS quiz_answers;
     DROP TABLE IF EXISTS quiz_attempts;
     DROP TABLE IF EXISTS quiz_options;
@@ -1454,6 +1455,99 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log("Created 6 course ratings.");
 
+  // ─── Lesson Comments ───
+  // Two-level discussion threads. Doubles as a demo of both tombstone
+  // variants: a moderator removal (with reason) and an author deletion.
+
+  // Thread 1: a student question with an instructor reply and a peer reply.
+  const inferenceQuestion = db
+    .insert(schema.comments)
+    .values({
+      lessonId: course1LessonIds[0],
+      userId: students[0].id, // Emma
+      body: "How much of the type system should I learn up front, or is inference usually enough?",
+      createdAt: daysAgo(28),
+    })
+    .returning()
+    .get();
+
+  db.insert(schema.comments)
+    .values([
+      {
+        lessonId: course1LessonIds[0],
+        userId: instructor1.id, // Sarah owns course 1
+        parentId: inferenceQuestion.id,
+        body: "Learn the annotations first so you can read the error messages, then lean on inference once the basics are automatic.",
+        createdAt: daysAgo(28),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[1].id, // James
+        parentId: inferenceQuestion.id,
+        body: "Reading the errors out loud helped me a lot - they get much less intimidating once you recognise the shape.",
+        createdAt: daysAgo(27),
+      },
+      {
+        lessonId: course1LessonIds[0],
+        userId: students[2].id, // Olivia
+        body: "The strict mode section later in this module is what finally made this click for me.",
+        createdAt: daysAgo(21),
+      },
+    ])
+    .run();
+
+  // Thread 2: a moderator removal, plus a reply that survives the tombstone.
+  const offTopicComment = db
+    .insert(schema.comments)
+    .values({
+      lessonId: course1LessonIds[3],
+      userId: students[4].id, // Sophia
+      body: "Has anyone tried that new AI code editor everyone keeps posting about?",
+      createdAt: daysAgo(12),
+    })
+    .returning()
+    .get();
+
+  db.insert(schema.comments)
+    .values({
+      lessonId: course1LessonIds[3],
+      userId: students[2].id, // Olivia
+      parentId: offTopicComment.id,
+      body: "Not the place for it, but the playground in this lesson is the better tool anyway.",
+      createdAt: daysAgo(12),
+    })
+    .run();
+
+  db.update(schema.comments)
+    .set({
+      deletedAt: daysAgo(11),
+      deletedByUserId: instructor1.id,
+      deletedReason: "Off topic for this lesson",
+    })
+    .where(eq(schema.comments.id, offTopicComment.id))
+    .run();
+
+  // Thread 3: an author deletion.
+  const retractedComment = db
+    .insert(schema.comments)
+    .values({
+      lessonId: course1LessonIds[6],
+      userId: students[2].id, // Olivia
+      body: "Never mind, the answer was in the next lesson all along.",
+      createdAt: daysAgo(6),
+    })
+    .returning()
+    .get();
+
+  db.update(schema.comments)
+    .set({ deletedAt: daysAgo(6), deletedByUserId: students[2].id })
+    .where(eq(schema.comments.id, retractedComment.id))
+    .run();
+
+  console.log(
+    "Created 7 lesson comments (3 threads, 1 moderator removal, 1 author deletion)."
+  );
+
   // ─── Lesson Progress ───
 
   // Helper to mark lessons as complete
@@ -1787,6 +1881,7 @@ You've completed the Building REST APIs course. You now have the skills to build
   console.log("  Quizzes: 3");
   console.log("  Enrollments: 7");
   console.log("  Course Ratings: 6");
+  console.log("  Lesson Comments: 7");
   console.log("  Purchases: 6 (5 individual + 1 team)");
   console.log("  Teams: 1 (with 5 coupons)");
 }
