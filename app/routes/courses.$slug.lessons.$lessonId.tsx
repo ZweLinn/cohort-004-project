@@ -11,6 +11,11 @@ import { getModuleById } from "~/services/moduleService";
 import { getCurrentUserId } from "~/lib/session";
 import { isUserEnrolled } from "~/services/enrollmentService";
 import {
+  getBookmarkedLessonIds,
+  isLessonBookmarked,
+  toggleBookmark,
+} from "~/services/bookmarkService";
+import {
   getLessonProgress,
   getLessonProgressForCourse,
   markLessonComplete,
@@ -31,6 +36,7 @@ import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import {
   AlertTriangle,
+  Bookmark,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -194,7 +200,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   let lessonStatus: string | null = null;
   let lastWatchPosition = 0;
   let watchProgress = 0;
+  let isBookmarked = false;
   const lessonProgressMap: Record<number, string> = {};
+  let bookmarkedLessonIds: number[] = [];
 
   if (currentUserId) {
     enrolled = isUserEnrolled(currentUserId, course.id);
@@ -213,6 +221,16 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       for (const record of progressRecords) {
         lessonProgressMap[record.lessonId] = record.status;
       }
+
+      // Bookmark state for this lesson and the whole curriculum sidebar
+      isBookmarked = isLessonBookmarked({
+        userId: currentUserId,
+        lessonId,
+      });
+      bookmarkedLessonIds = getBookmarkedLessonIds({
+        userId: currentUserId,
+        courseId: course.id,
+      });
 
       // Get video watch state for resume and progress display
       if (lesson.videoUrl) {
@@ -340,6 +358,8 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     lastWatchPosition,
     watchProgress,
     lessonProgressMap,
+    bookmarkedLessonIds,
+    isBookmarked,
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
@@ -367,6 +387,17 @@ export async function action({ params, request }: Route.ActionArgs) {
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
     return { success: true };
+  }
+
+  if (intent === "toggle-bookmark") {
+    if (!isUserEnrolled(currentUserId, course.id)) {
+      throw data("You must be enrolled in this course", { status: 403 });
+    }
+
+    return {
+      success: true,
+      ...toggleBookmark({ userId: currentUserId, lessonId }),
+    };
   }
 
   if (intent === "submit-quiz") {
@@ -485,6 +516,8 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     lastWatchPosition,
     watchProgress,
     lessonProgressMap,
+    bookmarkedLessonIds,
+    isBookmarked,
     pppBlocked,
     pppBlockedCountry,
     pppPurchaseCountry,
@@ -494,6 +527,7 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
   const [autoplay, toggleAutoplay] = useAutoplay();
   const fetcher = useFetcher({ key: `mark-complete-${lesson.id}` });
   const quizFetcher = useFetcher({ key: `quiz-${lesson.id}` });
+  const bookmarkFetcher = useFetcher({ key: `bookmark-${lesson.id}` });
   const navigate = useNavigate();
 
   const isMarking =
@@ -561,6 +595,7 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
         curriculum={curriculum}
         currentLessonId={lesson.id}
         lessonProgressMap={lessonProgressMap}
+        bookmarkedLessonIds={new Set(bookmarkedLessonIds)}
         enrolled={enrolled}
       />
 
@@ -609,6 +644,30 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
                   Open Code
                 </a>
               </Button>
+            )}
+            {enrolled && currentUserId && (
+              <bookmarkFetcher.Form method="post">
+                <input type="hidden" name="intent" value="toggle-bookmark" />
+                <Button
+                  type="submit"
+                  variant="outline"
+                  size="sm"
+                  disabled={bookmarkFetcher.state !== "idle"}
+                  aria-label={
+                    isBookmarked ? "Remove bookmark" : "Bookmark this lesson"
+                  }
+                  title={
+                    isBookmarked ? "Remove bookmark" : "Bookmark this lesson"
+                  }
+                >
+                  <Bookmark
+                    className={cn(
+                      "size-4",
+                      isBookmarked && "fill-amber-500 text-amber-500"
+                    )}
+                  />
+                </Button>
+              </bookmarkFetcher.Form>
             )}
           </div>
 
@@ -768,6 +827,7 @@ function CurriculumSidebar({
   curriculum,
   currentLessonId,
   lessonProgressMap,
+  bookmarkedLessonIds,
   enrolled,
 }: {
   course: { id: number; title: string; slug: string };
@@ -778,6 +838,7 @@ function CurriculumSidebar({
   }>;
   currentLessonId: number;
   lessonProgressMap: Record<number, string>;
+  bookmarkedLessonIds: Set<number>;
   enrolled: boolean;
 }) {
   // Find which module the current lesson belongs to
@@ -833,6 +894,9 @@ function CurriculumSidebar({
                     )}
                   />
                   <span className="flex-1 text-left">{mod.title}</span>
+                  {mod.lessons.some((l) => bookmarkedLessonIds.has(l.id)) && (
+                    <Bookmark className="size-3.5 shrink-0 fill-amber-500 text-amber-500" />
+                  )}
                 </button>
 
                 {isExpanded && (
@@ -867,7 +931,10 @@ function CurriculumSidebar({
                             ) : (
                               <Circle className="size-3.5 shrink-0" />
                             )}
-                            <span className="truncate">{l.title}</span>
+                            <span className="flex-1 truncate">{l.title}</span>
+                            {bookmarkedLessonIds.has(l.id) && (
+                              <Bookmark className="size-3.5 shrink-0 fill-amber-500 text-amber-500" />
+                            )}
                           </Link>
                         </li>
                       );

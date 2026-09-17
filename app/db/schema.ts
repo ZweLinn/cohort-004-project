@@ -159,6 +159,30 @@ export const lessonProgress = sqliteTable("lesson_progress", {
   completedAt: text("completed_at"),
 });
 
+export const lessonBookmarks = sqliteTable(
+  "lesson_bookmarks",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    lessonId: integer("lesson_id")
+      .notNull()
+      .references(() => lessons.id),
+    createdAt: text("created_at")
+      .notNull()
+      .$defaultFn(() => new Date().toISOString()),
+  },
+  (table) => [
+    // A student holds at most one bookmark per lesson, and the unique index
+    // also guards the toggle against concurrent inserts.
+    uniqueIndex("lesson_bookmarks_user_lesson_unique").on(
+      table.userId,
+      table.lessonId
+    ),
+  ]
+);
+
 export const comments = sqliteTable(
   "comments",
   {
