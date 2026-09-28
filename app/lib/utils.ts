@@ -15,6 +15,14 @@ export function formatPrice(cents: number | null | undefined): string {
 }
 
 /**
+ * Format a gross revenue amount in cents for analytics display.
+ * Unlike formatPrice, 0 renders as "$0.00" and cents are always included.
+ */
+export function formatRevenue(cents: number): string {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+/**
  * Human-readable relative time ("3 minutes ago", "yesterday").
  * `now` is injectable for deterministic tests.
  */

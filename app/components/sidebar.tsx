@@ -15,6 +15,7 @@ import {
   Sun,
   LogOut,
   Settings,
+  BarChart3,
 } from "lucide-react";
 
 interface CurrentUser {
@@ -67,6 +68,12 @@ const navItems: NavItem[] = [
     roles: [UserRole.Instructor],
   },
   {
+    label: "Analytics",
+    to: "/instructor/analytics",
+    icon: <BarChart3 className="size-4" />,
+    roles: [UserRole.Instructor],
+  },
+  {
     label: "Manage Users",
     to: "/admin/users",
     icon: <Users className="size-4" />,
@@ -110,7 +117,9 @@ export function Sidebar({
     document.documentElement.classList.toggle("dark", next);
     try {
       localStorage.setItem("cadence-theme", next ? "dark" : "light");
-    } catch {}
+    } catch {
+      // localStorage can throw in private browsing; the theme toggle still works.
+    }
   }
 
   return (

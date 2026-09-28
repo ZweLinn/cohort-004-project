@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatRelativeTime } from "./utils";
+import { formatRelativeTime, formatRevenue } from "./utils";
 
 const NOW = Date.parse("2026-06-01T12:00:00.000Z");
 
@@ -39,5 +39,21 @@ describe("formatRelativeTime", () => {
     expect(
       formatRelativeTime(new Date(NOW + 5 * MINUTE).toISOString(), NOW)
     ).toBe("in 5 minutes");
+  });
+});
+
+describe("formatRevenue", () => {
+  it("renders zero as $0.00", () => {
+    expect(formatRevenue(0)).toBe("$0.00");
+  });
+
+  it("renders cents correctly", () => {
+    expect(formatRevenue(4999)).toBe("$49.99");
+  });
+
+  it("always includes cents and never returns Free", () => {
+    expect(formatRevenue(1)).toBe("$0.01");
+    expect(formatRevenue(100)).toBe("$1.00");
+    expect(formatRevenue(0)).not.toBe("Free");
   });
 });
