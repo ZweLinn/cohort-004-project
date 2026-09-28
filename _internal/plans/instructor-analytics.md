@@ -22,7 +22,7 @@ Rules for the agent:
 Phase checklist:
 
 - [x] Phase 1 - Tracer bullet: route shell, auth, sidebar, range-in-URL
-- [ ] Phase 2 - Seed enrichment for verifiable data
+- [x] Phase 2 - Seed enrichment for verifiable data
 - [ ] Phase 3 - Portfolio sales figures (orders, revenue, students)
 - [ ] Phase 4 - Completion metrics
 - [ ] Phase 5 - Ratings and active students

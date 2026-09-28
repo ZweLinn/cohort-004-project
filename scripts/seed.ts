@@ -12,6 +12,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { calculatePppPrice, COUNTRIES } from "../app/lib/ppp";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,11 +32,80 @@ function daysAgo(n: number): string {
   return d.toISOString();
 }
 
-function slugify(title: string): string {
-  return title
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "");
+// ─── Deterministic pseudo-random generator ───
+// A fixed-seed mulberry32 so the enriched seed data is reproducible run to run.
+// All generated variation (names, dates, countries, completion depths) flows
+// through this single PRNG.
+
+function mulberry32(seed: number): () => number {
+  let state = seed >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+const rand = mulberry32(20260928);
+
+function randInt(min: number, max: number): number {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  return Math.floor(rand() * (hi - lo + 1)) + lo;
+}
+
+function pick<T>(items: readonly T[]): T {
+  return items[Math.floor(rand() * items.length)];
+}
+
+const FIRST_NAMES = [
+  "Ava", "Noah", "Mia", "Lucas", "Isabella", "Ethan", "Amelia", "Mason",
+  "Harper", "Leo", "Ella", "Logan", "Avery", "Jackson", "Sofia", "Carter",
+  "Layla", "Henry", "Grace", "Sebastian", "Chloe", "Owen", "Lily", "Dylan",
+  "Zoe", "Nathan", "Aria", "Julian", "Nora", "Isaac", "Ruby", "Caleb",
+  "Hannah", "Ryan", "Maya", "Adrian", "Eliana", "Jordan", "Penelope", "Evan",
+  "Savannah", "Dominic", "Aaliyah", "Gavin", "Stella", "Hunter", "Violet",
+  "Xavier", "Bella", "Cooper",
+];
+
+const LAST_NAMES = [
+  "Nguyen", "Garcia", "Smith", "Patel", "Kim", "Lopez", "Chen", "Brown",
+  "Singh", "Wilson", "Kumar", "Taylor", "Lee", "Martin", "Davis", "Anderson",
+  "Thomas", "Jackson", "White", "Harris", "Clark", "Lewis", "Robinson", "Walker",
+  "Young", "Hall", "Allen", "King", "Wright", "Scott", "Torres", "Hill",
+  "Green", "Adams", "Baker", "Nelson", "Carter", "Mitchell", "Perez", "Roberts",
+  "Turner", "Phillips", "Campbell", "Parker", "Evans", "Edwards", "Collins",
+  "Stewart", "Sanchez", "Morris",
+];
+
+const usedEmails = new Set<string>();
+
+function makeStudentEmail(first: string, last: string): string {
+  const base = `${first.toLowerCase()}.${last.toLowerCase()}`;
+  let email = `${base}@student.dev`;
+  let suffix = 2;
+  while (usedEmails.has(email)) {
+    email = `${base}${suffix}@student.dev`;
+    suffix += 1;
+  }
+  usedEmails.add(email);
+  return email;
+}
+
+// How many lessons a generated student completes, as a prefix of the course in
+// order. The bands decay so many students finish the early lessons and few
+// finish the course, producing a visible drop-off cliff.
+function decayDepth(totalLessons: number): number {
+  const r = rand();
+  if (r < 0.25) return 0;
+  if (r < 0.45) return randInt(1, Math.min(2, totalLessons));
+  const third = Math.max(1, Math.floor(totalLessons * 0.33));
+  const twoThirds = Math.max(third + 1, Math.floor(totalLessons * 0.66));
+  if (r < 0.65) return randInt(Math.min(3, third), third);
+  if (r < 0.85) return randInt(third + 1, twoThirds);
+  if (r < 0.94) return randInt(twoThirds + 1, totalLessons - 1);
+  return totalLessons;
 }
 
 // ─── Seed Data ───
@@ -53,6 +123,7 @@ async function seed() {
     DROP TABLE IF EXISTS quiz_questions;
     DROP TABLE IF EXISTS quizzes;
     DROP TABLE IF EXISTS lesson_progress;
+    DROP TABLE IF EXISTS lesson_bookmarks;
     DROP TABLE IF EXISTS coupons;
     DROP TABLE IF EXISTS team_members;
     DROP TABLE IF EXISTS teams;
@@ -167,8 +238,40 @@ async function seed() {
     .returning()
     .all();
 
+  // Reserve the hand-authored emails so generated names never collide with them.
+  for (const u of [admin, instructor1, instructor2, ...students, bossy]) {
+    usedEmails.add(u.email);
+  }
+
+  // ─── Generated students ───
+  // Deterministic names and emails from the PRNG so the seed is reproducible.
+  const generatedStudents = db
+    .insert(schema.users)
+    .values(
+      Array.from({ length: 134 }, (_, i) => {
+        const first = pick(FIRST_NAMES);
+        const last = pick(LAST_NAMES);
+        const email = makeStudentEmail(first, last);
+        return {
+          name: `${first} ${last}`,
+          email,
+          role: UserRole.Student,
+          avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=student-${i}`,
+          createdAt: daysAgo(randInt(30, 360)),
+        };
+      })
+    )
+    .returning()
+    .all();
+
+  // Shuffle so team-coupon redemption draws from a varied order.
+  for (let i = generatedStudents.length - 1; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    [generatedStudents[i], generatedStudents[j]] = [generatedStudents[j], generatedStudents[i]];
+  }
+
   console.log(
-    `Created ${1 + 2 + students.length + 1} users (1 admin, 2 instructors, ${students.length + 1} students).`
+    `Created ${3 + 6 + generatedStudents.length} users (1 admin, 2 instructors, ${6 + generatedStudents.length} students).`
   );
 
   // ─── Categories ───
@@ -1741,17 +1844,15 @@ You've completed the Building REST APIs course. You now have the skills to build
   // ─── Purchases ───
   // Individual purchases for enrolled students
 
-  const [purchase1] = db
-    .insert(schema.purchases)
+  db.insert(schema.purchases)
     .values({
-      userId: students[0].id, // Emma — bought course 1 individually
+      userId: students[0].id, // Emma - bought course 1 individually
       courseId: course1.id,
       pricePaid: 4999,
       country: "US",
       createdAt: daysAgo(50),
     })
-    .returning()
-    .all();
+    .run();
 
   db.insert(schema.purchases)
     .values({
@@ -1872,18 +1973,234 @@ You've completed the Building REST APIs course. You now have the skills to build
     `Created 1 team with Bossy McBossface as admin, 1 team purchase, and ${seededCoupons.length} coupons (2 redeemed, 3 available).`
   );
 
+  // ─── Enriched analytics data ───
+  // Roughly twelve months of history across both courses: individual purchases
+  // with PPP-varied pricing, several multi-seat team orders, a decay-curve of
+  // lesson progress, and recent watch events. All dates are relative to now and
+  // all variation flows through the fixed-seed PRNG, so the seed is reproducible.
+
+  const COUNTRY_CODES = COUNTRIES.map((c) => c.code);
+  const lessonIdsByCourse: Record<number, number[]> = {
+    [course1.id]: course1LessonIds,
+    [course2.id]: course2LessonIds,
+  };
+
+  // Demo enrollment pairs, so generated students never double-enroll a demo slot.
+  const enrolledPairs = new Set<string>([
+    `${students[0].id}:${course1.id}`,
+    `${students[0].id}:${course2.id}`,
+    `${students[1].id}:${course1.id}`,
+    `${students[2].id}:${course1.id}`,
+    `${students[2].id}:${course2.id}`,
+    `${students[3].id}:${course2.id}`,
+    `${students[4].id}:${course1.id}`,
+  ]);
+
+  const generatedEnrollments: {
+    userId: number;
+    courseId: number;
+    enrolledAt: string;
+    enrolledDaysAgo: number;
+  }[] = [];
+
+  // Individual purchases. The first batches are pinned to the recent windows so
+  // the 7d and 30d ranges are never empty; the rest spread across 12 months.
+  const TARGET_INDIVIDUAL = 165;
+  const individualPurchaseRows: {
+    userId: number;
+    courseId: number;
+    pricePaid: number;
+    country: string;
+    createdAt: string;
+  }[] = [];
+
+  for (let i = 0; i < TARGET_INDIVIDUAL; i++) {
+    let student = pick(generatedStudents);
+    const course = rand() < 0.5 ? course1 : course2;
+    let attempts = 0;
+    while (enrolledPairs.has(`${student.id}:${course.id}`) && attempts < 100) {
+      student = pick(generatedStudents);
+      attempts += 1;
+    }
+    const key = `${student.id}:${course.id}`;
+    if (enrolledPairs.has(key)) continue;
+    enrolledPairs.add(key);
+
+    const country = pick(COUNTRY_CODES);
+    const pricePaid = calculatePppPrice(course.price, country);
+    let enrolledDaysAgo: number;
+    if (i < 6) {
+      enrolledDaysAgo = randInt(0, 6);
+    } else if (i < 24) {
+      enrolledDaysAgo = randInt(7, 29);
+    } else {
+      enrolledDaysAgo = randInt(30, 360);
+    }
+    const createdAt = daysAgo(enrolledDaysAgo);
+
+    individualPurchaseRows.push({
+      userId: student.id,
+      courseId: course.id,
+      pricePaid,
+      country,
+      createdAt,
+    });
+    generatedEnrollments.push({
+      userId: student.id,
+      courseId: course.id,
+      enrolledAt: createdAt,
+      enrolledDaysAgo,
+    });
+  }
+
+  if (individualPurchaseRows.length) {
+    db.insert(schema.purchases).values(individualPurchaseRows).run();
+  }
+
+  // Several multi-seat team orders: one lump-sum purchase, a team, and coupons
+  // redeemed by distinct students. This makes enrollments exceed purchases.
+  const TEAM_ORDERS = 8;
+  let couponSeq = 0;
+  let teamRedemptionCount = 0;
+
+  for (let t = 0; t < TEAM_ORDERS; t++) {
+    const course = rand() < 0.5 ? course1 : course2;
+    const seats = randInt(3, 6);
+    const buyer = pick(generatedStudents);
+    const country = pick(COUNTRY_CODES);
+    const pricePaid = calculatePppPrice(course.price, country) * seats;
+    const orderDaysAgo = t === 0 ? randInt(0, 10) : randInt(1, 360);
+    const createdAt = daysAgo(orderDaysAgo);
+
+    const [team] = db.insert(schema.teams).values({ createdAt }).returning().all();
+    db.insert(schema.teamMembers)
+      .values({ teamId: team.id, userId: buyer.id, role: TeamMemberRole.Admin, createdAt })
+      .run();
+
+    const [teamPurchase] = db
+      .insert(schema.purchases)
+      .values({ userId: buyer.id, courseId: course.id, pricePaid, country, createdAt })
+      .returning()
+      .all();
+
+    const slugPart = course.slug.toUpperCase().replace(/[^A-Z0-9]/g, "");
+    const couponRows = Array.from({ length: seats }, () => ({
+      teamId: team.id,
+      courseId: course.id,
+      code: `TEAM-${slugPart}-${(couponSeq++).toString(36).toUpperCase().padStart(4, "0")}`,
+      purchaseId: teamPurchase.id,
+      createdAt,
+    }));
+    const teamCoupons = db.insert(schema.coupons).values(couponRows).returning().all();
+
+    for (const coupon of teamCoupons) {
+      const redeemer = generatedStudents.find(
+        (s) => !enrolledPairs.has(`${s.id}:${course.id}`)
+      );
+      if (!redeemer) break;
+      db.update(schema.coupons)
+        .set({ redeemedByUserId: redeemer.id, redeemedAt: createdAt })
+        .where(eq(schema.coupons.id, coupon.id))
+        .run();
+      enrolledPairs.add(`${redeemer.id}:${course.id}`);
+      generatedEnrollments.push({
+        userId: redeemer.id,
+        courseId: course.id,
+        enrolledAt: createdAt,
+        enrolledDaysAgo: orderDaysAgo,
+      });
+      teamRedemptionCount += 1;
+    }
+  }
+
+  if (generatedEnrollments.length) {
+    db.insert(schema.enrollments)
+      .values(
+        generatedEnrollments.map(({ userId, courseId, enrolledAt }) => ({
+          userId,
+          courseId,
+          enrolledAt,
+        }))
+      )
+      .run();
+  }
+
+  // Staggered lesson progress following a decay curve.
+  const generatedProgressRows: {
+    userId: number;
+    lessonId: number;
+    status: LessonProgressStatus;
+    completedAt: string;
+  }[] = [];
+
+  for (const enr of generatedEnrollments) {
+    const lessonIds = lessonIdsByCourse[enr.courseId];
+    const depth = decayDepth(lessonIds.length);
+    for (let i = 0; i < depth; i++) {
+      generatedProgressRows.push({
+        userId: enr.userId,
+        lessonId: lessonIds[i],
+        status: LessonProgressStatus.Completed,
+        completedAt: daysAgo(randInt(0, Math.max(0, enr.enrolledDaysAgo - 1))),
+      });
+    }
+  }
+
+  if (generatedProgressRows.length) {
+    db.insert(schema.lessonProgress).values(generatedProgressRows).run();
+  }
+
+  // Watch events (including progress heartbeats) dated inside the last 90 days.
+  const watchEventTypes = ["play", "pause", "seek", "ended", "heartbeat"];
+  const generatedWatchRows: {
+    userId: number;
+    lessonId: number;
+    eventType: string;
+    positionSeconds: number;
+    createdAt: string;
+  }[] = [];
+
+  for (const student of generatedStudents) {
+    if (rand() > 0.6) continue;
+    const enrollment = generatedEnrollments.find((e) => e.userId === student.id);
+    if (!enrollment) continue;
+    const lessonIds = lessonIdsByCourse[enrollment.courseId];
+    const eventCount = randInt(1, 4);
+    for (let e = 0; e < eventCount; e++) {
+      generatedWatchRows.push({
+        userId: student.id,
+        lessonId: pick(lessonIds),
+        eventType: pick(watchEventTypes),
+        positionSeconds: randInt(0, 900),
+        createdAt: daysAgo(randInt(0, 89)),
+      });
+    }
+  }
+
+  if (generatedWatchRows.length) {
+    db.insert(schema.videoWatchEvents).values(generatedWatchRows).run();
+  }
+
+  console.log(
+    `Created enriched analytics data: ${individualPurchaseRows.length} individual purchases, ${TEAM_ORDERS} team orders (${teamRedemptionCount} coupons redeemed), ${generatedEnrollments.length} generated enrollments, ${generatedProgressRows.length} progress rows, ${generatedWatchRows.length} watch events.`
+  );
+
   console.log("\n✓ Seed complete!");
-  console.log("  Users: 9 (1 admin, 2 instructors, 6 students)");
+  console.log(
+    `  Users: ${3 + 6 + generatedStudents.length} (1 admin, 2 instructors, ${6 + generatedStudents.length} students)`
+  );
   console.log("  Categories: 5");
   console.log(
     `  Courses: 2 (${course1LessonIds.length} + ${course2LessonIds.length} lessons)`
   );
   console.log("  Quizzes: 3");
-  console.log("  Enrollments: 7");
+  console.log(`  Enrollments: ${7 + generatedEnrollments.length}`);
   console.log("  Course Ratings: 6");
   console.log("  Lesson Comments: 7");
-  console.log("  Purchases: 6 (5 individual + 1 team)");
-  console.log("  Teams: 1 (with 5 coupons)");
+  console.log(
+    `  Purchases: ${6 + individualPurchaseRows.length + TEAM_ORDERS} (${5 + individualPurchaseRows.length} individual + ${1 + TEAM_ORDERS} team)`
+  );
+  console.log(`  Teams: ${1 + TEAM_ORDERS}`);
 }
 
 seed().catch(console.error);
